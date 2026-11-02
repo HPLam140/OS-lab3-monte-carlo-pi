@@ -8,7 +8,7 @@
 
 #define CACHE_LINE 64
 
-/* ---------- Per-thread RNG: xoshiro256** (Từ Source của bạn) ---------- */
+
 typedef struct { uint64_t s[4]; } rng_t;
 
 static uint64_t splitmix64(uint64_t *x) {
@@ -156,7 +156,7 @@ int main(int argc, char **argv) {
         pi = 4.0 * (double)total / (double)nPoints;
     }
 
-    /* Định dạng đầu ra CSV khớp hoàn toàn với code mẫu của bạn */
+  
     printf("%d,%llu,%d,%d,%.6f,%.6f,%.6f,%.8f\n",
            approach, (unsigned long long)nPoints, nThreads, runs,
            sum / runs, tmin, tmax, pi);
