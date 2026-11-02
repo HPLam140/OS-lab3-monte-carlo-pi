@@ -1,56 +1,46 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <locale.h>
 
 
 
 
 
-
-#define NUM_POINTS 10000000 // 10^7 points as recommended in the lab
-
-
+#define NUM_POINTS 100000000LL   // 10^8, as the group decided (LL so it matches %lld)
+#define SEED       67
 
 
 
 
-int main()
+
+int main(void)
 {
+    setlocale(LC_NUMERIC, "en_US.UTF-8");   // enables the ' flag; falls back silently if unavailable
+
     long long inside_circle = 0;
+    unsigned int seed = SEED;
+
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     
-    // 1. Use a fixed random seed to ensure reproducibility
-    srand(42);
-
-    // 2. Start measuring execution time
-    clock_t start_time = clock();
-
-    // 3. Main Monte Carlo loop
-    for (long long i = 0; i < NUM_POINTS; i++) {
-        // Generate random x and y between 0.0 and 1.0
-        double x = (double)rand() / RAND_MAX;
-        double y = (double)rand() / RAND_MAX;
-
-        // Check if the point falls inside the quarter circle (x^2 + y^2 <= 1)
-        if ((x * x + y * y) <= 1.0) {
+    for (long long i = 0; i < NUM_POINTS; i++)
+    {
+        double x = (double)rand_r(&seed) / RAND_MAX;
+        double y = (double)rand_r(&seed) / RAND_MAX;
+        if (x * x + y * y <= 1.0)
             inside_circle++;
-        }
     }
 
-    // 4. Stop measuring execution time
-    clock_t end_time = clock();
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
 
-    // Calculate elapsed time in seconds
-    double elapsed_time = (double)(end_time - start_time) / CLOCKS_PER_SEC;
-
-    // Estimate Pi
     double pi_estimate = 4.0 * (double)inside_circle / (double)NUM_POINTS;
 
-    // 5. Print results AFTER the loop (avoiding I/O inside loops to prevent timing distortion)
     printf("--- Approach 1: Single Thread Baseline ---\n");
-    printf("Total Points:     %lld\n", NUM_POINTS);
-    printf("Points Inside:    %lld\n", inside_circle);
-    printf("Estimated Pi:     %f\n", pi_estimate);
-    printf("Execution Time:   %f seconds\n", elapsed_time);
-
+    printf("Total Points:   %'lld\n", NUM_POINTS);
+    printf("Points Inside:  %'lld\n", inside_circle);
+    printf("Estimated Pi:   %.6f\n", pi_estimate);
+    printf("Execution Time: %.6f seconds\n", elapsed);
     return 0;
 }
