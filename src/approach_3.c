@@ -1,120 +1,118 @@
+/*
+ * Approach 3 - Monte Carlo pi, shared counter protected by a mutex.
+ *
+ * Usage: ./pi_approach3 <threads> <n> [k]
+ *   threads : number of worker threads (T)
+ *   n       : TOTAL number of random points (N), fixed for all experiments
+ *   k       : flush period (default 1).
+ *             k = 1  -> lock the mutex and update the shared counter EVERY iteration
+ *             k > 1  -> keep a private counter, lock + update the shared counter
+ *                       once every k iterations (and once more for the remainder)
+ *
+ * Output (one CSV line, printed AFTER the timer stops):
+ *   approach3,<threads>,<k>,<n>,<time_sec>,<pi>,<count>
+ *
+ * Seeding rule (must match Approach 2 so that counts are identical):
+ *   thread id has seed = BASE_SEED + id,  id = 0 .. T-1
+ *   thread id handles n/T points, the first (n % T) threads take 1 extra point.
+ */
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <errno.h>
-#include <unistd.h>
 #include <pthread.h>
-#include <sys/types.h>
-#include <sys/ipc.h>
-#include <sys/msg.h>
+#include <time.h>
 
-#define PERMS 0644
-#define MSG_KEY 0x123
+#define BASE_SEED 67u
 
-struct my_msgbuf {
-    long mtype;
-    char mtext[200];
+static long long g_count = 0;                       /* shared counter */
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+
+struct Task {
+    int       id;
+    long long points;
+    long long k;
 };
 
-int msqid;
-long send_type;
-long recv_type;
-int user_id;
+static void *worker(void *arg) {
+    struct Task *t = (struct Task *)arg;
+    unsigned int seed = BASE_SEED + (unsigned int)t->id;   /* private seed */
+    long long local = 0;          /* hits since the last flush */
+    long long since = 0;          /* iterations since the last flush */
 
-// Luồng chuyên gửi tin nhắn
-void *send_routine(void *arg) {
-    struct my_msgbuf buf;
-    buf.mtype = send_type;
-    int len;
+    for (long long i = 0; i < t->points; i++) {
+        double x = (double)rand_r(&seed) / RAND_MAX;
+        double y = (double)rand_r(&seed) / RAND_MAX;
+        if (x * x + y * y <= 1.0)
+            local++;
+        since++;
 
-    while (fgets(buf.mtext, sizeof(buf.mtext), stdin) != NULL) {
-        len = strlen(buf.mtext);
-        /* Xóa ký tự xuống dòng '\n' ở cuối nếu có */
-        if (len > 0 && buf.mtext[len - 1] == '\n') {
-            buf.mtext[len - 1] = '\0';
-            len--;
-        }
-
-        if (msgsnd(msqid, &buf, len + 1, 0) == -1) { /* +1 cho '\0' */
-            perror("msgsnd");
-            break;
-        }
-
-        /* Nếu người dùng gõ "end" thì kết thúc */
-        if (strcmp(buf.mtext, "end") == 0) {
-            printf("Bạn đã kết thúc cuộc trò chuyện.\n");
-            exit(0);
+        if (since == t->k) {                      /* time to update shared var */
+            pthread_mutex_lock(&g_lock);
+            g_count += local;
+            pthread_mutex_unlock(&g_lock);
+            local = 0;
+            since = 0;
         }
     }
-
-    /* Trường hợp nhấn Ctrl+D (EOF) */
-    strcpy(buf.mtext, "end");
-    msgsnd(msqid, &buf, strlen(buf.mtext) + 1, 0);
-    exit(0);
-}
-
-// Luồng chuyên nhận tin nhắn
-void *recv_routine(void *arg) {
-    struct my_msgbuf buf;
-    int other_user = (user_id == 1) ? 2 : 1;
-
-    for (;;) {
-        /* Chỉ nhận tin nhắn có mtype khớp với recv_type */
-        if (msgrcv(msqid, &buf, sizeof(buf.mtext), recv_type, 0) == -1) {
-            perror("msgrcv");
-            exit(1);
-        }
-
-        if (strcmp(buf.mtext, "end") == 0) {
-            printf("\n[User %d đã rời cuộc trò chuyện]\n", other_user);
-            /* Xóa message queue khi kết thúc */
-            msgctl(msqid, IPC_RMID, NULL);
-            exit(0);
-        }
-
-        printf("[User %d]: \"%s\"\n", other_user, buf.mtext);
+    if (since > 0) {                              /* flush the remainder */
+        pthread_mutex_lock(&g_lock);
+        g_count += local;
+        pthread_mutex_unlock(&g_lock);
     }
     return NULL;
 }
 
+static double now_sec(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);              /* wall-clock, not CPU time */
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
 int main(int argc, char *argv[]) {
-    if (argc != 2) {
-        printf("Cách dùng: %s <1 hoặc 2>\n", argv[0]);
-        printf("  Ví dụ Terminal 1: %s 1\n", argv[0]);
-        printf("  Ví dụ Terminal 2: %s 2\n", argv[0]);
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr, "Usage: %s <threads> <n> [k]\n", argv[0]);
         return 1;
     }
-
-    user_id = atoi(argv[1]);
-    if (user_id == 1) {
-        send_type = 1;
-        recv_type = 2;
-    } else if (user_id == 2) {
-        send_type = 2;
-        recv_type = 1;
-    } else {
-        printf("Lỗi: Tham số chỉ nhận 1 (User 1) hoặc 2 (User 2)!\n");
+    char *e1, *e2, *e3;
+    long T = strtol(argv[1], &e1, 10);
+    long long n = strtoll(argv[2], &e2, 10);
+    long long k = 1;
+    if (argc == 4) k = strtoll(argv[3], &e3, 10);
+    if (*e1 || *e2 || (argc == 4 && *e3) || T <= 0 || n <= 0 || k <= 0) {
+        fprintf(stderr, "Usage: %s <threads> <n> [k]  (all positive integers)\n", argv[0]);
         return 1;
     }
+    if (T > n) T = (long)n;
 
-    /* Kết nối hoặc tạo mới Message Queue */
-    if ((msqid = msgget(MSG_KEY, PERMS | IPC_CREAT)) == -1) {
-        perror("msgget");
-        exit(1);
+    /* ---- initialization (NOT timed) ---- */
+    pthread_t   *th = malloc(T * sizeof(pthread_t));
+    struct Task *tk = malloc(T * sizeof(struct Task));
+    if (!th || !tk) { perror("malloc"); return 1; }
+    long long base = n / T, rem = n % T;
+    for (long i = 0; i < T; i++) {
+        tk[i].id = (int)i;
+        tk[i].points = base + (i < rem ? 1 : 0);
+        tk[i].k = k;
     }
 
-    printf("=== USER %d SẴN SÀNG GIAO TIẾP 2 CHIỀU ===\n", user_id);
-    printf("(Gõ nội dung và nhấn Enter để gửi, gõ 'end' để thoát)\n\n");
+    /* ---- timed region: create threads -> all joined ---- */
+    double t0 = now_sec();
+    for (long i = 0; i < T; i++) {
+        if (pthread_create(&th[i], NULL, worker, &tk[i]) != 0) {
+            perror("pthread_create");
+            return 1;
+        }
+    }
+    for (long i = 0; i < T; i++)
+        pthread_join(th[i], NULL);
+    double t1 = now_sec();
 
-    pthread_t snd_thread, rcv_thread;
+    /* ---- output AFTER the timer stops ---- */
+    double pi = 4.0 * (double)g_count / (double)n;
+    printf("approach3,%ld,%lld,%lld,%.6f,%.6f,%lld\n", T, k, n, t1 - t0, pi, g_count);
 
-    /* Tạo 2 luồng gửi và nhận chạy song song */
-    pthread_create(&snd_thread, NULL, send_routine, NULL);
-    pthread_create(&rcv_thread, NULL, recv_routine, NULL);
-
-    /* Đợi 2 luồng kết thúc */
-    pthread_join(snd_thread, NULL);
-    pthread_join(rcv_thread, NULL);
-
+    pthread_mutex_destroy(&g_lock);
+    free(th);
+    free(tk);
     return 0;
 }
